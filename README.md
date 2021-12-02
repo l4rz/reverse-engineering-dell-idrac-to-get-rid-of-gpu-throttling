@@ -130,9 +130,9 @@ GPU 00000000:1E:00.0
 
 2) Install BIOS 2.5.4 and iDRAC 2.50.50. If there's an `UEFI0315: Unable to process an iDRAC request to configure Secure Boot keys because of a communication error between BIOS` error after downgrade, [you need to reset the keys via redfish](https://www.dell.com/support/kbdoc/en-us/000177187/idrac8-uefi0315-error-at-post-after-downgrading-idrac8-firmware).
 
-2) Use the exploit https://github.com/KraudSecurity/Exploits/tree/master/CVE-2018-1207 to get the root iDRAC shell. Prior to running the script, make sure that the SH4 cross compiler is installed and working, or use [my payload.so built for remote IP 192.168.0.100](http://l4rz.net/payload.so). Launch the netcat and then the script.
+3) Use the exploit https://github.com/KraudSecurity/Exploits/tree/master/CVE-2018-1207 to get the root iDRAC shell. Prior to running the script, make sure that the SH4 cross compiler is installed and working, or use [my payload.so built for remote IP 192.168.0.100](http://l4rz.net/payload.so). Launch the netcat and then the script.
 
-3) The netcat shell is garbage, some commands like writecfg do not work at all for some reason, so the next step is to alter `/etc/passwd` and `/etc/shadow` to access root sheel via ssh:
+4) The netcat shell is garbage, some commands like writecfg do not work at all for some reason, so the next step is to alter `/etc/passwd` and `/etc/shadow` to access root sheel via ssh:
 
 ```
 cd /tmp
@@ -146,7 +146,7 @@ cat 112 > /etc/shadow
 
 Test it by sshing to `root@192.168.0.120`, using default password `calvin`, executing `su`, entering `user1234`.
 
-4) With the system energized but turned off, do:
+5) With the system energized but turned off, do:
 
 ```
 ssh root@192.168.0.120
@@ -165,7 +165,7 @@ GPGPU_92_1=5 5 de 10 b5 1d de 10 49 12 b8 b b8 b 1 ff 48 # b5!!!!!
 GPGPU_93_1=5 5 2 10 c2 67 28 10 34 3 b8 b b8 b 1 ff 50
 ```
 
-5) Now boot the system up. Prior to boot turn iDRAC debugs on:
+6) Now boot the system up. Prior to boot turn iDRAC debugs on:
 
 ```
 debugcontrol -l 10
@@ -201,7 +201,7 @@ This is bad:
     Nov 16 14:26:18 idrac-FFDCWL2 L4, S55 [1075]: GetGPGPUPwr: End of table reached (Entry 92). Didn't find a power table match for device
 ```
 
-6) Install Ubuntu 20.04 (`ubuntu-20.04.3-live-server-amd64.iso`), install `build-essential`, manually blacklist nouveau driver:
+7) Install Ubuntu 20.04 (`ubuntu-20.04.3-live-server-amd64.iso`), install `build-essential`, manually blacklist nouveau driver:
 
 ```
 vi /etc/modprobe.d/blacklist-nouveau.conf
@@ -213,11 +213,11 @@ sudo update-initramfs -u
 reboot
 ```
 
-7) Download and install the Nvidia data center driver 470.82.01 (download and install `nvidia-driver-local-repo-ubuntu2004-470.82.01_1.0-1_amd64.deb`; add the key, then do `sudo apt-get install cuda-drivers`)
+8) Download and install the Nvidia data center driver 470.82.01 (download and install `nvidia-driver-local-repo-ubuntu2004-470.82.01_1.0-1_amd64.deb`; add the key, then do `sudo apt-get install cuda-drivers`)
 
-8) Reboot the system and enjoy the lack of HW Power Brake Slowdown in `nvidia-smi -q` output.
+9) Reboot the system and enjoy the lack of HW Power Brake Slowdown in `nvidia-smi -q` output.
 
-9) After iDRAC reload: you need to ssh as root and do writecfg to patch the thermal table, then reboot again.
+10) After iDRAC reload: you need to ssh as root and do writecfg to patch the thermal table, then reboot again.
 
 <!--
 echo "PCI_Index_1=92" >> poweroem.conf
