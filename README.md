@@ -34,7 +34,7 @@ Curious about finding a way to counter this behaviour, I did some reverse engine
 ## Searching for the solution
 
 iDRAC image consists of Linux kernel, Linux filesystem and some configuration files, as can be observed by downloading iDRAC self-extracting .EXE for Windows, unzipping it and [binwalking](https://github.com/ReFirmLabs/binwalk). It is possible therefore to gain a root access to a running iDRAC8, either via its serial console ([this requires soldering a serial header to motherboard](https://github.com/Fohdeesha/idrac-7-8-reverse-engineering/)), or over the network connection, by exploiting one of known vulnerabilities (CVE-2018-1207, CVE-2018-15774, and CVE-2018-15776, also cf. [The Unbearable lightness
-of BMC, Blackhat 2018](https://i.blackhat.com/us-18/Wed-August-8/us-18-Waisman-Soler-The-Unbearable-Lightness-of-BMC.pdf)). Some Russian guy [put together a Python script](https://github.com/KraudSecurity/Exploits/blob/master/CVE-2018-1207/CVE-2018-1207.py) to exploit CVE-2018-1207; this exploit requires gcc cross compiler for SH4 architecture (iDRAC8 is based on  Renesas SH7758), [here's payload.so built for remote IP 192.168.0.100](http://l4rz.net/payload.so). It works only with iDRAC verions lower than < 2.52.52.52, but it's not really an issue since iDRAC8 can be easily downgraded.
+of BMC, Blackhat 2018](https://i.blackhat.com/us-18/Wed-August-8/us-18-Waisman-Soler-The-Unbearable-Lightness-of-BMC.pdf)). Some Russian guy [put together a Python script](https://github.com/KraudSecurity/Exploits/blob/master/CVE-2018-1207/CVE-2018-1207.py) to exploit CVE-2018-1207; this exploit requires gcc cross compiler for SH4 architecture (iDRAC8 is based on  Renesas SH7758), [here's payload.so built for remote (iDRAC) IP 192.168.0.100](http://l4rz.net/payload.so). It works only with iDRAC verions lower than < 2.52.52.52, but it's not really an issue since iDRAC8 can be easily downgraded.
 
 Trying various things in iDRAC shell and closely examining scripts and binaries extracted from iDRAC image allows to shed a light on behavior of iDRAC. The iDRAC main process is `fullfw`; it handles the entirety of BMC logic, from system characterization on startup, to initialization of onboard components and CPLD in particular. It also takes care of supplementary functions, like Dell lifecycle controller and iDRAC web interface.
 
@@ -130,7 +130,11 @@ GPU 00000000:1E:00.0
 
 2) Install BIOS 2.5.4 and iDRAC 2.50.50. If there's an `UEFI0315: Unable to process an iDRAC request to configure Secure Boot keys because of a communication error between BIOS` error after downgrade, [you need to reset the keys via redfish](https://www.dell.com/support/kbdoc/en-us/000177187/idrac8-uefi0315-error-at-post-after-downgrading-idrac8-firmware).
 
-3) Use the exploit https://github.com/KraudSecurity/Exploits/tree/master/CVE-2018-1207 to get the root iDRAC shell. Prior to running the script, make sure that the SH4 cross compiler is installed and working, or use [my payload.so built for remote IP 192.168.0.100](http://l4rz.net/payload.so). Launch the netcat and then the script.
+```
+curl -k -v -u root --request POST https://192.168.0.120/redfish/v1/Systems/System.Embedded.1/SecureBoot/Actions/SecureBoot.ResetKeys -d '{"ResetKeysType":"ResetAllKeysToDefault"}'  --header "Content-Type: application/json"
+```
+
+3) Use [the exploit](https://github.com/KraudSecurity/Exploits/tree/master/CVE-2018-1207) to get the root iDRAC shell. Prior to running the script, make sure that the SH4 cross compiler is installed and working, or use [my payload.so built for remote IP 192.168.0.100](http://l4rz.net/payload.so). Launch the netcat and then the script.
 
 4) The netcat shell is garbage, some commands like writecfg do not work at all for some reason, so the next step is to alter `/etc/passwd` and `/etc/shadow` to access root sheel via ssh:
 
