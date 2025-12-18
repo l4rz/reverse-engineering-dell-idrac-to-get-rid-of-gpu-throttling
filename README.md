@@ -3,6 +3,9 @@
 ## TL;DR
 Unsupported GPUs in Dell C4130 get throttled, here's how to prevent this from happening.
 
+*Most of the text contained herein is the original reverse enginnering from 
+[l4rz](https://github.com/l4rz/reverse-engineering-dell-idrac-to-get-rid-of-gpu-throttling). The text by [re-l](https://github.com/re-l/re-dell-idrac-8-c4130) is in italics. We build upon his research to provide a GPU throttling fix that does not overwrite support for existing GPUs and cleanly survives iDRAC updates/upgrades/resets.*
+
 ## The problem
 
 Dell PowerEdge C4130 ("C4130") is a versatile platform, accomodating up to four GPUs per 1U box. It is readily available on eBay so it could be used for various custom builds, including SXM2 GPUs. One of C4130 options, "Configuration K", comes with NVLink interposer board which provides NVLink interconnection and PCIe uplink for up to four SXM2 Nvidia Tesla GPUs, P100s or V100s.
@@ -109,6 +112,87 @@ The power tables will get reinitialized to the default values (`/flash/pd0/ipmi/
 
 (To allow OEM customizations for power tables, there's a `/etc/sysapps_script/pm_power_update.sh` script that reads a configuration file `/flash/data0/persmod/poweroem.conf` that is located on a writable flash filesystem and alters power tables via a series of `IPMICmd` commands. However populating this file with relevant data didn't worked for me; `IPMICmd` returned an error status. I should research this more I suppose.)
 
+*Here, l4rz's gets within touching distance of a permanent solution; while we can alter the squashfs present on `/dev/mmcblk0p9`, we need to be careful as failing to compute and store a CRC for our modded partition will result in the iDRAC rolling itself back to its previous available firmware version, and additionally, this partition is part of the iDRAC firmware image and gets overwritten on iDRAC updates.*
+
+*Since we'd like to be able to update our iDRAC controller to the latest available version after applying the mod, in order to not remain on a version vulnerable to known RCEs indefinitely, we keep digging, and observe that early in the boot process, the init script `/etc/init.d/setup-flash.sh` is called, which contains a few interesting blocks for us:*
+
+```
+setup_thermal_config()                                                                                 
+{                                                  
+    persmodpath=/flash/data0/persmod/ThermalConfig.txt
+    dracpath=/etc/default/ipmi/default/ThermalConfig.txt
+    [ ! -e /flash/pd0/ipmi/${systemname}/ThermalConfig.txt ] || dracpath=/flash/pd0/ipmi/${systemname}/ThermalConfig.txt
+    if [ -e $persmodpath ] ; then                                           
+        PersmodVer=$(grep TEMPLATE_REVISION_NUM $persmodpath | sed 's/.*\([X,x]\)\([0-9][0-9]\).*/\2/') 
+        DRACThermalFileVer=`grep TEMPLATE_REVISION_NUM $dracpath | sed 's/.*\([X,x]\)\([0-9][0-9]\).*/\2/' `
+        if [ $PersmodVer -le $DRACThermalFileVer ] ; then                     
+            echo "Thermal Config from Identity Module Installed"                                       
+            conditional_link $persmodpath /flash/data0/BMC_Data/ThermalConfig.txt               
+        else                                                                                           
+            echo "Thermal Config from Identity Module with version" $PersmodVer "is greater than the iDRAC supported version" $DRACThermalFileVer
+            echo "Thermal Config from Identity Module could not be installed"
+            conditional_link $dracpath /flash/data0/BMC_Data/ThermalConfig.txt                         
+        fi                                     
+    else                                                         
+        conditional_link $dracpath /flash/data0/BMC_Data/ThermalConfig.txt
+    fi                                                        
+} 
+```
+
+*and*
+
+```
+cfgdir=/flash/data0/config                                                                                                  
+for file in lmcfg.txt platcfggrp.txt platcfgfld.txt cfgfld.txt  \             
+    cfggrp.txt gencfggrp.txt \                                                                                              
+    gencfgfld.txt \                                                           
+    nonpmaltdefaults.txt    \                                                                                               
+    altdefaults.txt                                                                                                         
+do                                                                            
+    if [ -e  /flash/data0/persmod/$file ]; then                                                                             
+        conditional_link /flash/data0/persmod/$file $cfgdir/$file                                                           
+    elif [ -e /flash/pd0/config/$file ]; then                                 
+        conditional_link /flash/pd0/config/$file $cfgdir/$file              
+    elif [ -e /flash/pd0/ipmi/$systemname/$file ]; then                       
+        conditional_link /flash/pd0/ipmi/$systemname/$file $cfgdir/$file
+    elif [ -e /etc/default/config/$file ]; then                               
+        conditional_link /etc/default/config/$file  $cfgdir/$file             
+    elif [ -e /etc/default/ipmi/default/$file ]; then                                   
+        conditional_link /etc/default/ipmi/default/$file $cfgdir/$file        
+    else                                                                      
+        echo "PANIC: Could not find a copy of $file to use."          
+    fi                                                                  
+done 
+```
+
+*These scripts, certainly intending on providing OEMs with the flexibility to add their own devices to the thermal and platform configurations for the system, give us the tools we need to get rid of GPU throttling for 32GB V100 GPUs.*
+
+*Since it's 2025, and we can be an OEM if we want, we can design a [ThermalConfig.txt](/persmod/ThermalConfig.txt) and [platcfgfld.txt](/persmod/platcfgfld.txt) file to add our GPU, without overwriting any existing configurations or supported cards:*
+
+```
+[...]
+[3_GPU_TIER3]
+    VENDOR_ID=4318,4318,4318,4318,4318,4318,4098;
+    SUB_VENDOR_ID=4318,4318,4318,4318,4318,4318,4136;
+    DEVICE_ID=7601,7610,7603,7600,7604,7605,26562;
+    SUB_DEVICE_ID=4626,4634,4629,4627,4628,4681,820;
+    TARGET=72,72,72,72,72,72,80;
+[...]
+```
+
+```
+[...]
+20033:CFG_BIN:89:1:GPGPU_91:'05 05 DE 10 B3 1D DE 10 15 12 B8 0B B8 0B 01 FF 48':17:CFG_READONLY::
+20033:CFG_BIN:89:1:GPGPU_92:'05 05 DE 10 B5 1D DE 10 49 12 B8 0B B8 0B 01 FF 48':17:CFG_READONLY::
+20033:CFG_BIN:90:1:GPGPU_93:'05 05 DE 10 BA 1D DE 10 1A 12 B8 0B B8 0B 01 FF 48':17:CFG_READONLY::
+20033:CFG_BIN:91:1:GPGPU_94:'05 05 02 10 C2 67 28 10 34 03 B8 0B B8 0B 01 FF 50':17:CFG_READONLY::
+20033:CFG_BIN:92:1:GPGPU_END:'FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF':17:CFG_READONLY::
+[...]
+```
+
+*By simply saving these two text files to `/flash/data0/persmod/`, and rebooting the iDRAC, our GPU throttling fix is now live and persistent.*
+
+
 ## Steps
 
 1) Make sure all cables are installed and the system configuration is as close as possible to "supported by Dell", i.e. there is no error `UEFI0147: The system hardware or cabling configuration is invalid` error during system boot. For C4130 Configuration K it involves installing all GPU power cables and the downlink PCIe cable from SXM2 board to PCIe riser. Boot the system up, observe the throttled state and note the PCI device IDs of the GPUs:
@@ -134,9 +218,9 @@ GPU 00000000:1E:00.0
 curl -k -v -u root --request POST https://192.168.0.120/redfish/v1/Systems/System.Embedded.1/SecureBoot/Actions/SecureBoot.ResetKeys -d '{"ResetKeysType":"ResetAllKeysToDefault"}'  --header "Content-Type: application/json"
 ```
 
-3) Use [the exploit](https://github.com/KraudSecurity/Exploits/tree/master/CVE-2018-1207) to get the root iDRAC shell. Prior to running the script, make sure that the SH4 cross compiler is installed and working, or use [my payload.so built for remote IP 192.168.0.100](http://l4rz.net/payload.so). Launch the netcat and then the script.
+3) *Use [the exploit](exploits/CVE-2018-1207.py) to get a proper shell on the iDRAC running version 2.50. Prior to running the script, make sure that the SH4 cross compiler is installed and working (`apt install gcc-sh4-linux-gnu`) and start e.g., a netcat listener. We have updated the original exploit to support Python 3 and recent GCC package names.*
 
-4) The netcat shell is garbage, some commands like writecfg do not work at all for some reason, so the next step is to alter `/etc/passwd` and `/etc/shadow` to access root sheel via ssh:
+4) The embedded payload's shell has been improved a bit from the original exploit, but if we want reliable access the next step is to alter `/etc/passwd` and `/etc/shadow` to access the root shell directly via ssh:
 
 ```
 cd /tmp
@@ -150,23 +234,20 @@ cat 112 > /etc/shadow
 
 Test it by sshing to `root@192.168.0.120`, using default password `calvin`, executing `su`, entering `user1234`.
 
-5) With the system energized but turned off, do:
+5) *Copy the provided [ThermalConfig.txt](/persmod/ThermalConfig.txt) and [platcfgfld.txt](/persmod/platcfgfld.txt) files to the `/flash/data0/persmod/` directory, then reboot the iDRAC by issuing e.g., `racadm racreset`. If the `persmod` directory does not exist, simply create it with `mkdir /flash/data0/persmod/`.*
+
+*Once the iDRAC has rebooted, you can verify that the fix has been applied by looking at the early logs from the iDRAC, or simply that the correct symlinks have been automatically created on startup:*
 
 ```
-ssh root@192.168.0.120
-su
-readcfg -g20033
-# we can observe the following lines in power config
-GPGPU_91_1=5 5 de 10 b3 1d de 10 15 12 b8 b b8 b 1 ff 48
-GPGPU_92_1=5 5 de 10 ba 1d de 10 1a 12 b8 b b8 b 1 ff 48
-GPGPU_93_1=5 5 2 10 c2 67 28 10 34 3 b8 b b8 b 1 ff 50
-# we want to change one of approved gid/vid to the one of v100-sxm2-32gb VID=0x10de DID=0x1db5 SVID=0x10de SDID=0x1249
-writecfg -r'@@20033:90:1' -v'05 05 DE 10 B5 1D DE 10 49 12 B8 0B B8 0B 01 FF 48' # this changes line #92 aka 90
-# to verify
-readcfg -g20033
-GPGPU_91_1=5 5 de 10 b3 1d de 10 15 12 b8 b b8 b 1 ff 48
-GPGPU_92_1=5 5 de 10 b5 1d de 10 49 12 b8 b b8 b 1 ff 48 # b5!!!!!
-GPGPU_93_1=5 5 2 10 c2 67 28 10 34 3 b8 b b8 b 1 ff 50
+ls -al /flash/data0/config/platcfgfld.txt /flash/data0/BMC_Data/ThermalConfig.txt 
+lrwxrwxrwx    1 root     root            38 Dec 31  1999 /flash/data0/BMC_Data/ThermalConfig.txt -> /flash/data0/persmod/ThermalConfig.txt
+lrwxrwxrwx    1 root     root            35 Dec 31  1999 /flash/data0/config/platcfgfld.txt -> /flash/data0/persmod/platcfgfld.txt
+```
+
+```
+cat /tmp/setup-flash.log | grep -i "identity module"
++ echo Thermal Config from Identity Module Installed
+Thermal Config from Identity Module Installed
 ```
 
 6) Now boot the system up. Prior to boot turn iDRAC debugs on:
@@ -221,21 +302,11 @@ reboot
 
 9) Reboot the system and enjoy the lack of HW Power Brake Slowdown in `nvidia-smi -q` output.
 
-10) After iDRAC reload: you need to ssh as root and do writecfg to patch the thermal table, then reboot again.
+10) *Success.*
 
-<!--
-echo "PCI_Index_1=92" >> poweroem.conf
-echo "PCI_VendorID_1=0x10 0xDE" >> poweroem.conf
-echo "PCI_DeviceID_1=0x1D 0xB5" >> poweroem.conf
-echo "PCI_SubVendorID_1=0x10 0xDE" >> poweroem.conf
-echo "PCI_SubDeviceID_1=0x12 0x49" >> poweroem.conf
-echo "PCI_PeakPower_1=0x01 0x2C" >> poweroem.conf
-echo "PCI_Throttled_Power_1=0x01 0x2C" >> poweroem.conf
-echo "PCI_Type_1=0x00" >> poweroem.conf
--->
 
 [^1]: I'm not aware of the exact mechanism how iDRAC signals throttling to a GPU. The 12v rail readings are normal in that state. Most likely, iDRAC sets or resets some specific bit in the CPLD memory. [The CPLD (implemented on Altera FPGA) seems to function as a large GPIO device](https://www.sstic.org/media/SSTIC2019/SSTIC-actes/iDRACKAR/SSTIC2019-Article-iDRACKAR-iooss.pdf). It may in turn assert a signal on interface between main board and SXM2 FRU. Alternativey, it's possible that iDRAC signals something to the PLX PCIe switch, or other logic on the FRU board and it results in GPU power brake state. It is unlikely that iDRAC communicates directly with GPUs via interface such as SMBPBI (SMBus Post Box Interface). It is also not clear how exactly the power brake state gets asserted. It seems that specific PCIe pin (PWR_BRAKE_N) is responsible for this action. Likely the end point for this signal is some PIN on a MEG-Array SXM2 mezzanine connector. The SXM2 pinout wasn't disclosed by NVIDIA and I was unable to find it. The only relevant document I was able to find is [Advanced Accelerator Adapter Electro-Mechanical Specification by Open POWER foundation](http://cdn.openpowerfoundation.org/wp-content/uploads/resources/25Gbps-spec-1.0/25Gbps-spec-20171108.pdf). I'm not sure whether NVLINK 2.0 and OpenCAPI 3.0 are somehow pin compatible, at least for power and PCIe lines. If that so, the PWR_BRAKE_N is the pin E18 on the right SXM2 Meg-Array. Maybe plastering some Kapton paper over this pin could help to avoid throttling. Maybe the Nvidia BIOS checks the state of the pin and would throttle the GPU anyway if the pin is in <i>mu</i> state. Would be nice if someone could find out.
 
 ## Written by
 
-l4rz
+l4rz & *re-l*
